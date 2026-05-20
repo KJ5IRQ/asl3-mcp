@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "allstar-mcp"
-version = "0.1.1"
+version = "0.1.2"
 description = "MCP server for AllStar Link — wraps ASL3-API REST endpoints as MCP tools for AI agent control of amateur radio nodes"
 readme = "README.md"
 requires-python = ">=3.11"

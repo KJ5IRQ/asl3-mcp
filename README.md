@@ -26,11 +26,6 @@ The MCP server is a translation layer only. It never touches AMI directly — al
 ## Quick Start
 
 ```bash
-# Run directly from GitHub (before PyPI publish)
-ALLSTAR_API_KEY=yourkey ALLSTAR_API_URL=http://your-node:8073 \
-  uvx --from git+https://github.com/KJ5IRQ/asl3-mcp allstar-mcp
-
-# Once published to PyPI:
 ALLSTAR_API_KEY=yourkey ALLSTAR_API_URL=http://your-node:8073 uvx allstar-mcp
 ```
 
@@ -43,7 +38,7 @@ Add to `claude_desktop_config.json`:
   "mcpServers": {
     "allstar": {
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/KJ5IRQ/asl3-mcp", "allstar-mcp"],
+      "args": ["allstar-mcp"],
       "env": {
         "ALLSTAR_API_KEY": "your-api-key-here",
         "ALLSTAR_API_URL": "http://your-node-ip:8073"
@@ -106,8 +101,9 @@ Add to `claude_desktop_config.json`:
 
 ## Safety Design
 
-- **Live state check**: Tool descriptions instruct the agent to call `get_live_variables` before any connect/disconnect — avoids interrupting active QSOs
+- **Active-QSO guard**: `connect_node` and `disconnect_node` automatically block during active RX/TX unless `override_active_qso=True`
 - **Confirmed flag**: `connect_node`, `disconnect_node`, `send_dtmf`, `execute_macro`, and `disconnect_all` all require `confirmed=True` and will no-op with an explanation if not set
+- **Dry-run mode**: All confirmed-action tools accept `dry_run=True` to preview the action and payload without executing
 - **Audit context**: `get_audit_log` lets the agent check recent command history before issuing duplicate commands
 - **No AMI access**: The server has no Asterisk/AMI credentials and cannot bypass ASL3-API
 
