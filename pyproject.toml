@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "allstar-mcp"
-version = "0.1.0"
+version = "0.1.1"
 description = "MCP server for AllStar Link — wraps ASL3-API REST endpoints as MCP tools for AI agent control of amateur radio nodes"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -24,6 +24,9 @@ dependencies = [
     "httpx>=0.27",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
 [project.scripts]
 allstar-mcp = "allstar_mcp.server:main"
 
@@ -33,3 +36,6 @@ Repository = "https://github.com/KJ5IRQ/asl3-mcp"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/allstar_mcp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
