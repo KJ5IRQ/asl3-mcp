@@ -3,19 +3,17 @@
 from __future__ import annotations
 
 import os
-from typing import Annotated
+import re
 
 import httpx
 from fastmcp import FastMCP
-from fastmcp.resources import Resource
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
 def _base_url() -> str:
-    url = os.environ.get("ALLSTAR_API_URL", "http://localhost:8073")
-    return url.rstrip("/")
+    return os.environ.get("ALLSTAR_API_URL", "http://localhost:8073").rstrip("/")
 
 def _api_key() -> str:
     key = os.environ.get("ALLSTAR_API_KEY", "")
@@ -41,6 +39,12 @@ def _get(path: str, **params: object) -> object:
         r.raise_for_status()
         return r.json()
 
+def _get_no_auth(path: str) -> object:
+    with httpx.Client() as client:
+        r = client.get(f"{_base_url()}{path}", timeout=10)
+        r.raise_for_status()
+        return r.json()
+
 def _post(path: str, body: dict | None = None) -> object:
     with httpx.Client() as client:
         r = client.post(
@@ -53,6 +57,25 @@ def _post(path: str, body: dict | None = None) -> object:
         return r.json()
 
 # ---------------------------------------------------------------------------
+# Input validation
+# ---------------------------------------------------------------------------
+
+def _validate_node(node_number: str) -> None:
+    if not re.fullmatch(r"\d+", node_number):
+        raise ValueError(
+            f"Invalid node number {node_number!r}: must contain digits only."
+        )
+
+def _validate_dtmf(sequence: str) -> None:
+    if not sequence:
+        raise ValueError("DTMF sequence must not be empty.")
+    if not re.fullmatch(r"[0-9*#]+", sequence):
+        raise ValueError(
+            f"Invalid DTMF sequence {sequence!r}: "
+            "valid characters are 0-9, *, and # only."
+        )
+
+# ---------------------------------------------------------------------------
 # FastMCP server
 # ---------------------------------------------------------------------------
 
@@ -63,10 +86,66 @@ mcp = FastMCP(
         "SAFETY: Always call get_live_variables before any connect or disconnect action "
         "to check whether the node is actively transmitting (txkeyed=true) or receiving "
         "(rxkeyed=true). Interrupting an active QSO is poor operating practice. "
-        "Destructive tools (disconnect_all, send_dtmf, execute_macro) require explicit "
-        "user confirmation before use. Never infer confirmation — ask the user directly."
+        "connect_node, disconnect_node, disconnect_all, send_dtmf, and execute_macro all "
+        "require confirmed=True and explicit user approval before use. "
+        "Never infer confirmation — ask the user directly."
     ),
 )
+
+# ---------------------------------------------------------------------------
+# Health / diagnostics
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def health_check() -> object:
+    """Check the health of the ASL3-API connection and the Asterisk node.
+
+    Verifies four things and returns a structured result:
+      - api_reachable: HTTP GET /ping succeeded
+      - auth_ok: authenticated call to /capabilities succeeded
+      - ami_connected: Asterisk AMI connection is alive (from /ping)
+      - node: node number and callsign from the API
+
+    Use this as the first tool call when diagnosing connectivity problems or
+    before a session that will issue control commands.
+    """
+    result: dict[str, object] = {
+        "api_reachable": False,
+        "auth_ok": False,
+        "ami_connected": None,
+        "node": None,
+        "callsign": None,
+        "api_version": None,
+        "error": None,
+    }
+    try:
+        ping = _get_no_auth("/ping")
+        result["api_reachable"] = True
+        result["ami_connected"] = ping.get("ami_connected")
+        result["node"] = ping.get("node")
+        result["callsign"] = ping.get("callsign")
+    except Exception as exc:
+        result["error"] = f"API unreachable: {exc}"
+        return result
+
+    try:
+        version = _get_no_auth("/version")
+        result["api_version"] = version.get("version") or version.get("api_version")
+    except Exception:
+        pass  # version is informational; don't fail health check for it
+
+    try:
+        _get("/capabilities")
+        result["auth_ok"] = True
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code == 403:
+            result["error"] = "Authentication failed: check ALLSTAR_API_KEY."
+        else:
+            result["error"] = f"Capabilities check failed: {exc}"
+    except Exception as exc:
+        result["error"] = f"Capabilities check failed: {exc}"
+
+    return result
 
 # ---------------------------------------------------------------------------
 # Read-only tools
@@ -130,6 +209,7 @@ def lookup_node(node_number: str) -> object:
     Args:
         node_number: AllStar node number to look up (e.g. "637050")
     """
+    _validate_node(node_number)
     return _get(f"/lookup/{node_number}")
 
 
@@ -190,41 +270,69 @@ def cop_version() -> object:
     return _post("/cop/version")
 
 # ---------------------------------------------------------------------------
-# Medium-risk control tools (require situational awareness)
+# Confirmed-action tools (connect, disconnect, DTMF, macro, disconnect-all)
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
 def connect_node(
     node_number: str,
     monitor_only: bool = False,
+    confirmed: bool = False,
 ) -> object:
     """Connect this node to a remote AllStar node.
 
-    BEFORE CALLING: run get_live_variables to confirm txkeyed=false and rxkeyed=false.
-    Connecting mid-QSO is disruptive. Also run get_connected_nodes to confirm the
-    target is not already linked.
+    BEFORE CALLING:
+      1. Call get_live_variables to confirm txkeyed=false and rxkeyed=false.
+         Connecting mid-QSO is disruptive.
+      2. Call get_connected_nodes to confirm the target is not already linked.
+      3. Call lookup_node to show the user the callsign/location they are about to link.
+
+    REQUIRES confirmed=True. Do not set confirmed=True until the user has reviewed
+    the target node and explicitly approved the connection.
 
     Args:
         node_number: Remote node number to connect to (e.g. "2560")
         monitor_only: If True, connect in receive-only (monitor) mode — no TX to remote
+        confirmed: Must be True to execute — set only after explicit user approval
     """
+    _validate_node(node_number)
+    if not confirmed:
+        return {
+            "status": "not_executed",
+            "reason": (
+                f"connect_node({node_number}) was not executed because confirmed=False. "
+                "Show the user the target node details from lookup_node, then ask for "
+                "explicit approval before setting confirmed=True."
+            ),
+        }
     return _post("/connect", {"node": node_number, "monitor_only": monitor_only})
 
 
 @mcp.tool()
-def disconnect_node(node_number: str) -> object:
+def disconnect_node(node_number: str, confirmed: bool = False) -> object:
     """Disconnect from a specific remote node.
 
-    BEFORE CALLING: run get_live_variables to confirm txkeyed=false. Disconnecting
-    during an active transmission drops audio mid-keying. Confirm the target node
-    number with get_connected_nodes before calling.
+    BEFORE CALLING:
+      1. Call get_live_variables to confirm txkeyed=false. Disconnecting during an
+         active transmission drops audio mid-keying.
+      2. Call get_connected_nodes to confirm the target node is actually linked.
 
-    REQUIRES explicit user confirmation before use — do not call without the user
-    actively requesting this specific disconnect.
+    REQUIRES confirmed=True. Do not set confirmed=True until the user has explicitly
+    named this node and approved the disconnect.
 
     Args:
         node_number: Remote node number to disconnect (e.g. "2560")
+        confirmed: Must be True to execute — set only after explicit user approval
     """
+    _validate_node(node_number)
+    if not confirmed:
+        return {
+            "status": "not_executed",
+            "reason": (
+                f"disconnect_node({node_number}) was not executed because confirmed=False. "
+                "Confirm the target node with the user before setting confirmed=True."
+            ),
+        }
     return _post("/disconnect", {"node": node_number})
 
 
@@ -246,6 +354,7 @@ def send_dtmf(sequence: str, confirmed: bool = False) -> object:
         sequence: DTMF string to send (e.g. "1234" or "*3")
         confirmed: Must be True to execute — prevents accidental sends
     """
+    _validate_dtmf(sequence)
     if not confirmed:
         return {
             "status": "not_executed",
@@ -327,7 +436,7 @@ def events_stream_info() -> str:
     """SSE event stream connection details for live node state updates.
 
     Connect to this URL to receive real-time events:
-      {base_url}/events?api_key=YOUR_KEY
+      {base_url}/events?api_key=<ALLSTAR_API_KEY>
 
     Events emitted:
       node.rxkeyed        — RF receiver keyed state changed
@@ -342,10 +451,9 @@ def events_stream_info() -> str:
     one-shot state reads.
     """
     base = _base_url()
-    key = os.environ.get("ALLSTAR_API_KEY", "<ALLSTAR_API_KEY>")
     return (
-        f"SSE stream URL: {base}/events?api_key={key}\n"
-        f"Connect with: curl -N '{base}/events?api_key={key}'\n\n"
+        f"SSE stream URL: {base}/events?api_key=<ALLSTAR_API_KEY>\n"
+        f"Connect with: curl -N '{base}/events?api_key=<ALLSTAR_API_KEY>'\n\n"
         "Events: node.rxkeyed, node.txkeyed, node.variables.snapshot, "
         "link.connected, link.disconnected, health.ami"
     )

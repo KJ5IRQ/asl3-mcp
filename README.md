@@ -26,7 +26,11 @@ The MCP server is a translation layer only. It never touches AMI directly — al
 ## Quick Start
 
 ```bash
-# Run directly with uvx (no install needed)
+# Run directly from GitHub (before PyPI publish)
+ALLSTAR_API_KEY=yourkey ALLSTAR_API_URL=http://your-node:8073 \
+  uvx --from git+https://github.com/KJ5IRQ/asl3-mcp allstar-mcp
+
+# Once published to PyPI:
 ALLSTAR_API_KEY=yourkey ALLSTAR_API_URL=http://your-node:8073 uvx allstar-mcp
 ```
 
@@ -39,7 +43,7 @@ Add to `claude_desktop_config.json`:
   "mcpServers": {
     "allstar": {
       "command": "uvx",
-      "args": ["allstar-mcp"],
+      "args": ["--from", "git+https://github.com/KJ5IRQ/asl3-mcp", "allstar-mcp"],
       "env": {
         "ALLSTAR_API_KEY": "your-api-key-here",
         "ALLSTAR_API_URL": "http://your-node-ip:8073"
@@ -62,6 +66,7 @@ Add to `claude_desktop_config.json`:
 
 | Tool | Description |
 |------|-------------|
+| `health_check` | API reachable, auth works, AMI connected, node/version |
 | `get_node_status` | Uptime, keyup count, TX time, DTMF stats |
 | `get_connected_nodes` | Who is linked and where (with callsign/location) |
 | `get_live_variables` | Live RX/TX keyed state, link counts, autopatch status |
@@ -82,8 +87,8 @@ Add to `claude_desktop_config.json`:
 
 | Tool | Description |
 |------|-------------|
-| `connect_node` | Connect to a remote node (check live_variables first) |
-| `disconnect_node` | Disconnect from a specific node (confirm required) |
+| `connect_node` | Connect to a remote node (`confirmed=True` required) |
+| `disconnect_node` | Disconnect from a specific node (`confirmed=True` required) |
 | `send_dtmf` | Send DTMF sequence (`confirmed=True` required) |
 | `execute_macro` | Run a macro from rpt.conf (`confirmed=True` required) |
 
@@ -102,7 +107,7 @@ Add to `claude_desktop_config.json`:
 ## Safety Design
 
 - **Live state check**: Tool descriptions instruct the agent to call `get_live_variables` before any connect/disconnect — avoids interrupting active QSOs
-- **Confirmed flag**: `send_dtmf`, `execute_macro`, and `disconnect_all` require `confirmed=True` and will no-op and explain why if not set
+- **Confirmed flag**: `connect_node`, `disconnect_node`, `send_dtmf`, `execute_macro`, and `disconnect_all` all require `confirmed=True` and will no-op with an explanation if not set
 - **Audit context**: `get_audit_log` lets the agent check recent command history before issuing duplicate commands
 - **No AMI access**: The server has no Asterisk/AMI credentials and cannot bypass ASL3-API
 
