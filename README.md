@@ -1,111 +1,180 @@
 # allstar-mcp
 
-MCP server for [AllStar Link](https://allstarlink.org) node control. Wraps [ASL3-API](https://github.com/KJ5IRQ/asl3-api) REST endpoints as MCP tools, giving AI agents (Claude, GPT-4, any MCP-compatible client) structured, intent-aware access to AllStar Link node monitoring and control.
+A small, client-neutral MCP interface to the ASL3 Remote Platform.
 
-The first MCP server for AllStar Link in existence.
+allstar-mcp does not control Asterisk or app_rpt directly. It translates nine
+semantic MCP tools into the ASL3-API v1 REST contract. Authentication,
+authorization, traffic policy, dispatch serialization, durable operations,
+idempotency, verification, and radio safety remain authoritative in asl3-api.
+
+No particular AI model, desktop client, or personal assistant is required.
 
 ## Architecture
 
-```
-Claude / AI Agent
-      |
-  allstar-mcp  (FastMCP, Python)
-      |
-  ASL3-API  (REST + SSE, port 8073)
-      |
-  AMI / Asterisk / app_rpt
-```
+    MCP client
+       |
+       | stdio
+       v
+    allstar-mcp
+       |
+       | authenticated HTTP
+       v
+    asl3-api
+       |
+       | AMI on localhost
+       v
+    Asterisk / app_rpt
 
-The MCP server is a translation layer only. It never touches AMI directly — all operations go through ASL3-API REST endpoints.
+The remote-network product is the REST API. The MCP server listens on stdio
+only in v0.2.0.
 
 ## Requirements
 
-- ASL3-API v1.4+ running on your AllStar node (see [ASL3-API](https://github.com/KJ5IRQ/asl3-api))
-- Python 3.11+ or `uv`
+- Python 3.10 or newer
+- ASL3-API vNext/v1
+- an ASL3-API credential with observe authority for read tools
+- control authority for control tools
 
-## Quick Start
+The MCP implementation uses the official Model Context Protocol Python SDK,
+pinned to mcp==2.2.0.
 
-```bash
-ALLSTAR_API_KEY=yourkey ALLSTAR_API_URL=http://your-node:8073 uvx allstar-mcp
-```
+## Quick start
 
-## Claude Desktop Configuration
+Set the API endpoint and credential, then run the stdio server:
 
-Add to `claude_desktop_config.json`:
+    export ALLSTAR_API_URL=http://127.0.0.1:8073
+    export ALLSTAR_API_KEY='your-api-key'
+    uvx allstar-mcp
 
-```json
-{
-  "mcpServers": {
-    "allstar": {
-      "command": "uvx",
-      "args": ["allstar-mcp"],
-      "env": {
-        "ALLSTAR_API_KEY": "your-api-key-here",
-        "ALLSTAR_API_URL": "http://your-node-ip:8073"
-      }
-    }
-  }
-}
-```
+ALLSTAR_API_URL defaults to http://127.0.0.1:8073.
 
-## Environment Variables
+For a remote node, connect to asl3-api through the protected transport
+recommended by that project, such as Tailscale, WireGuard, or a TLS reverse
+proxy. Do not expose Asterisk AMI for MCP clients.
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `ALLSTAR_API_KEY` | Yes | — | ASL3-API authentication key |
-| `ALLSTAR_API_URL` | No | `http://localhost:8073` | Base URL of your ASL3-API instance |
+Any MCP client that can launch a stdio server can use the same command and
+environment variables. Client-specific configuration formats belong in the
+client's own documentation.
 
-## Tool Surface
+## Tool surface
 
-### Read-only (no risk)
+Exactly nine tools are exposed.
 
-| Tool | Description |
-|------|-------------|
-| `health_check` | API reachable, auth works, AMI connected, node/version |
-| `get_node_status` | Uptime, keyup count, TX time, DTMF stats |
-| `get_connected_nodes` | Who is linked and where (with callsign/location) |
-| `get_live_variables` | Live RX/TX keyed state, link counts, autopatch status |
-| `get_capabilities` | What this node supports — for agent auto-config |
-| `lookup_node` | Callsign, location from 40k-node AllStar database |
-| `get_audit_log` | Recent command history for agent context |
+### Read-only
 
-### Low-risk control
+| Tool | Purpose |
+|---|---|
+| health_check | API reachability, auth, AMI health, and backend-contract compatibility |
+| get_node_state | Fresh native node state with explicit unknown/incomplete evidence |
+| lookup_node | Public directory metadata for a canonical AllStar node number |
+| get_recent_operations | Recent durable control operations |
+| get_operation_status | One durable operation by operation ID |
 
-| Tool | Description |
-|------|-------------|
-| `cop_identify` | Play node ID over the air |
-| `cop_time` | Say current time over the air |
-| `cop_status` | Say system status over the air |
-| `cop_version` | Say app_rpt version over the air |
+### Control
 
-### Medium-risk (require situational awareness)
+| Tool | Purpose |
+|---|---|
+| announce | Request identify, time, status, or version |
+| link_node | Link one node in transceive or monitor mode |
+| unlink_node | Remove one exact direct link, including a permanent link |
+| unlink_all | Remove all direct links, including permanent links |
 
-| Tool | Description |
-|------|-------------|
-| `connect_node` | Connect to a remote node (`confirmed=True` required) |
-| `disconnect_node` | Disconnect from a specific node (`confirmed=True` required) |
-| `send_dtmf` | Send DTMF sequence (`confirmed=True` required) |
-| `execute_macro` | Run a macro from rpt.conf (`confirmed=True` required) |
+There are no generic REST, AMI, COP, shell, DTMF, macro, force, emergency,
+confirmation, dry-run, QSO-bypass, or arbitrary-command tools.
 
-### High-risk (destructive)
+There are also no MCP resources, prompts, Tasks, or remote MCP listener in this
+release.
 
-| Tool | Description |
-|------|-------------|
-| `disconnect_all` | Drop ALL active connections (`confirmed=True` required) |
+## Result model
 
-### Resources
+Control tools do not return a simplistic success=true.
 
-| Resource | Description |
-|----------|-------------|
-| `allstar://events/stream` | SSE event stream URL and connection details |
+ASL3-API creates a durable operation and tracks separate dispatch and observed
+effect states. MCP returns that operation unchanged inside a small envelope
+containing the idempotency key and operation document.
 
-## Safety Design
+Call get_operation_status to learn what happened later.
 
-- **Active-QSO guard**: `connect_node` and `disconnect_node` automatically block during active RX/TX unless `override_active_qso=True`
-- **Confirmed flag**: `connect_node`, `disconnect_node`, `send_dtmf`, `execute_macro`, and `disconnect_all` all require `confirmed=True` and will no-op with an explanation if not set
-- **Dry-run mode**: All confirmed-action tools accept `dry_run=True` to preview the action and payload without executing
-- **Audit context**: `get_audit_log` lets the agent check recent command history before issuing duplicate commands
-- **No AMI access**: The server has no Asterisk/AMI credentials and cannot bypass ASL3-API
+STATE_UNKNOWN or UNKNOWN evidence is never converted into false, and
+OUTCOME_UNKNOWN is never converted into success or failure.
+
+## Retry behavior
+
+Each control tool invocation:
+
+1. checks the backend capability contract,
+2. generates one Idempotency-Key,
+3. makes at most one control HTTP request.
+
+The MCP adapter has no automatic control retry loop and configures the HTTP
+transport with retries disabled.
+
+If the control response is lost, the tool returns
+CONTROL_RESPONSE_UNCERTAIN, the key used for that logical attempt, and
+retried=false. It does not issue a second radio operation.
+
+A received ASL3-API problem response is preserved with its stable code and
+detail. API credentials are redacted from surfaced errors.
+
+## Compatibility gate
+
+Before any control request, the adapter checks /v1/capabilities for the
+contract it depends on:
+
+- API contract 1
+- result contract 1.0
+- native app_rpt AMI backend contract
+- durable operations
+- idempotency support
+- single control ownership
+- automatic control replay disabled
+- required semantic operations
+
+An incompatible backend blocks MCP control. Read-only tools remain available
+when they can be used safely.
+
+This is compatibility checking, not radio policy. Traffic eligibility and other
+operator policy remain protected inside asl3-api and cannot be weakened by MCP
+arguments.
+
+## Node identifiers
+
+Controllable AllStar node targets must match:
+
+    ^[1-9][0-9]{0,5}$
+
+That means 1 to 6 ASCII decimal digits, with no leading zero, whitespace,
+Unicode digits, signs, shorthand, or sentinel values.
+
+Directory lookup is informational. A private/static node can still be a valid
+target even if it is absent from the public directory.
+
+## Development
+
+    python3 -m venv .venv
+    .venv/bin/pip install -e '.[dev]'
+    .venv/bin/ruff check src/ tests/
+    .venv/bin/pytest -q
+
+The tests use httpx.MockTransport and the official MCP SDK. They do not access
+a live AllStar node or issue radio commands.
+
+CI runs on Python 3.10 and 3.13, lints, tests, and builds the package.
+
+## Security boundary
+
+allstar-mcp is intentionally not the safety boundary.
+
+It has no AMI credentials and cannot:
+
+- weaken protected traffic policy,
+- increase its API credential authority,
+- request a QSO override,
+- replay an uncertain control operation,
+- invoke raw app_rpt functions,
+- bypass the durable operation ledger.
+
+MCP tool annotations are client hints only. ASL3-API remains authoritative.
 
 ## License
 
