@@ -2,6 +2,31 @@
 
 All notable changes to allstar-mcp are documented here.
 
+## [Unreleased]
+
+### Changed
+
+- `announce` now accepts only `identify` and `status`. The published tool
+  schema, its enum, and the tool description no longer offer `time` or
+  `version`.
+- Documented `tx_keyed` accurately in the node-state output schema: it is
+  app_rpt's main/local TX **logical** state, not proof of RF, of a keyed
+  transmitter, or of audio crossing a native link. ASL3-API still treats it as
+  ACTIVE traffic for safety.
+
+### Removed
+
+- `time` and `version` announcement kinds. ASL3-API withdrew them because
+  app_rpt converts both into link telemetry text addressed to transceive links,
+  and the *receiving* node's telemetry policy decides whether anything is
+  spoken. Neither the API nor this adapter can observe or control that, so an
+  audible announcement could not honestly be promised. The underlying command
+  mappings were always correct; the product contract was not.
+
+  A request for either kind is now rejected by the tool schema before any
+  backend call. The existing `/v1/capabilities` enforcement is unchanged and
+  still refuses any kind the backend does not advertise.
+
 ## [0.2.0] - 2026-09-19
 
 ### Changed

@@ -7,7 +7,12 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 NODE_PATTERN = r"^[1-9][0-9]{0,5}$"
 Node = Annotated[str, StringConstraints(strict=True, pattern=NODE_PATTERN)]
 OperationId = Annotated[str, StringConstraints(strict=True, pattern=r"^[A-Za-z0-9_-]{1,128}$")]
-AnnouncementKind = Literal["identify", "time", "status", "version"]
+# identify and status are the only kinds ASL3-API supports. time and version
+# were withdrawn: app_rpt sends them as link telemetry text and the receiving
+# node decides whether anything is spoken, so an audible result cannot be
+# promised. Narrowed here as well as in the backend so the published tool
+# schema never offers a client a value that will be refused.
+AnnouncementKind = Literal["identify", "status"]
 LinkMode = Literal["transceive", "monitor"]
 OperationKind = Literal["link_node", "unlink_node", "unlink_all", "announce"]
 
@@ -69,8 +74,22 @@ class NodeState(APIModel):
     state_status: Literal["COMPLETE", "STATE_UNKNOWN"]
     traffic_state: Literal["ACTIVE", "CLEAR", "UNKNOWN"]
     complete: bool
-    rx_keyed: bool | None = None
-    tx_keyed: bool | None = None
+    rx_keyed: bool | None = Field(
+        default=None,
+        description=(
+            "app_rpt RPT_RXKEYED: receiver logical state. null when unknown."
+        ),
+    )
+    tx_keyed: bool | None = Field(
+        default=None,
+        description=(
+            "app_rpt RPT_TXKEYED: main/local TX logical state. It is not proof "
+            "of RF, of a physically keyed transmitter, or of audio crossing a "
+            "native link. On a radioless Local/pseudo hub it can be true while "
+            "nothing reaches the links. ASL3-API still treats true as ACTIVE "
+            "traffic for safety. null when unknown."
+        ),
+    )
     direct_links: list[DirectLink] | None = None
     reasons: list[str] = Field(default_factory=list)
     source: str = "app_rpt/RptStatus/XStat+SawStat"

@@ -148,8 +148,8 @@ SPECS: dict[str, ToolSpec] = {
     "announce": ToolSpec(
         "announce",
         (
-            "Request one fixed semantic announcement: identify, time, status, "
-            "or version. ASL3-API performs admission policy and returns an operation."
+            "Request one fixed semantic announcement: identify or status. "
+            "ASL3-API performs admission policy and returns an operation."
         ),
         AnnounceInput,
         ControlResult,

@@ -34,7 +34,7 @@ CAPABILITIES = {
         "automatic_control_replay": False,
         "control_enabled": True,
         "supported_operations": ["announce", "link_node", "unlink_node", "unlink_all"],
-        "announcements": ["identify", "time", "status", "version"],
+        "announcements": ["identify", "status"],
     },
     "idempotency": {"header": "Idempotency-Key"},
 }
@@ -341,7 +341,10 @@ def test_incompatible_capabilities_refuse_control(section, field, value):
     "name,args,feature,value,code",
     [
         ("unlink_all", {}, "control_enabled", False, "CONTROL_UNAVAILABLE"),
-        ("announce", {"kind": "time"}, "announcements", ["identify"], "UNSUPPORTED_ANNOUNCEMENT"),
+        # `status` is valid in the MCP schema, so this proves the backend
+        # capability gate fires on its own rather than riding on schema
+        # enforcement: the backend advertises only `identify`.
+        ("announce", {"kind": "status"}, "announcements", ["identify"], "UNSUPPORTED_ANNOUNCEMENT"),
     ],
 )
 def test_backend_control_availability(name, args, feature, value, code):
@@ -529,3 +532,80 @@ def test_real_stdio_sdk_handshake_and_tool_error():
                 assert result.structured_content["code"] == "INVALID_ARGUMENTS"
 
     asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# Withdrawn announcement kinds
+#
+# `time` and `version` are withdrawn. app_rpt delivers them as link telemetry
+# text and the receiving node decides whether anything is spoken, so neither
+# ASL3-API nor this adapter can promise an audible announcement. The published
+# tool schema must not offer a value the backend will refuse.
+# ---------------------------------------------------------------------------
+
+WITHDRAWN_KINDS = ["time", "version"]
+
+
+def announce_kind_enum():
+    """The announcement enum exactly as an MCP client receives it."""
+    schema = TOOLS["announce"].definition().input_schema
+    return schema["properties"]["kind"]["enum"]
+
+
+def test_published_announce_enum_is_exactly_identify_and_status():
+    assert announce_kind_enum() == ["identify", "status"]
+
+
+@pytest.mark.parametrize("kind", WITHDRAWN_KINDS)
+def test_published_announce_enum_omits_withdrawn_kinds(kind):
+    assert kind not in announce_kind_enum()
+
+
+@pytest.mark.parametrize("kind", WITHDRAWN_KINDS)
+def test_announce_description_does_not_advertise_withdrawn_kinds(kind):
+    description = TOOLS["announce"].definition().description
+    assert kind not in description.lower()
+
+
+def test_announce_description_names_the_supported_kinds():
+    description = TOOLS["announce"].definition().description.lower()
+    assert "identify" in description
+    assert "status" in description
+
+
+@pytest.mark.parametrize("kind", WITHDRAWN_KINDS)
+def test_withdrawn_kind_is_rejected_before_any_backend_call(kind):
+    """Schema enforcement must stop it without touching the backend."""
+    backend = Backend()
+    result = run_call(backend, "announce", {"kind": kind})
+    assert result.is_error
+    assert result.structured_content["code"] == "INVALID_ARGUMENTS"
+    assert backend.requests == []
+
+
+@pytest.mark.parametrize("kind", ["identify", "status"])
+def test_supported_kinds_still_dispatch(kind):
+    backend = Backend()
+    result = run_call(backend, "announce", {"kind": kind})
+    assert not result.is_error
+    assert [r.url.path for r in backend.requests] == [
+        "/v1/capabilities",
+        "/v1/announcements",
+    ]
+
+
+@pytest.mark.parametrize("kind", WITHDRAWN_KINDS)
+def test_historical_withdrawn_operation_is_still_readable(kind):
+    """Withdrawal narrows what can be requested, not what was recorded.
+
+    The hub ran with these kinds supported, so the backend can still return an
+    operation whose request names one. Reading it must not fail.
+    """
+    backend = Backend()
+    backend.read_reply = httpx.Response(
+        200, json=operation("announce", {"kind": kind})
+    )
+    result = run_call(backend, "get_operation_status", {"operation_id": "op_123"})
+    assert not result.is_error
+    assert result.structured_content["kind"] == "announce"
+    assert result.structured_content["request"] == {"kind": kind}

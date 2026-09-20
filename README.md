@@ -74,7 +74,7 @@ Exactly nine tools are exposed.
 
 | Tool | Purpose |
 |---|---|
-| announce | Request identify, time, status, or version |
+| announce | Request identify or status |
 | link_node | Link one node in transceive or monitor mode |
 | unlink_node | Remove one exact direct link, including a permanent link |
 | unlink_all | Remove all direct links, including permanent links |
